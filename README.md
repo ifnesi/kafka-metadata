@@ -1,11 +1,12 @@
 # Kafka Metadata Fetching and Caching Demo
 
 This repo shows how a Kafka client **discovers the full cluster** and **caches metadata** even when it only bootstraps to a single broker.
+![Diagram](docs/diagram.png)
 
 It uses:
 
-- [Confluent Platform](https://docs.confluent.io/platform/current/get-started/platform.html) running on Docker (KRaft mode, 1 controller + 3 brokers)
-- A small Python script using the Confluent Kafka Python client
+- [Confluent Platform](https://docs.confluent.io/platform/current/get-started/platform.html) running on Docker (KRaft mode: 1x controller + 3x brokers)
+- A simple Python script using the Confluent Kafka Python client
 
 The goal is to help developers **see and reason about Kafka metadata**: brokers, topics, partitions, and leaders, and understand how the client caches and refreshes this data.
 
@@ -23,17 +24,18 @@ Create and activate a Python virtual environment, then install the Confluent Kaf
 python3 -m venv .venv
 source .venv/bin/activate
 pip install confluent-kafka
+deactivate
 ```
 
 ## Cluster Overview
 
 The Docker Compose file starts:
 
-- **1 KRaft controller node** (`controller-1`)
-- **3 Kafka brokers** (`kafka-1`, `kafka-2`, `kafka-3`)
-- **1 setup container** that creates 10 demo topics (`topic-0` … `topic-9`), each with:
-  - **2 partitions**
-  - **Replication factor 3**
+- **1x KRaft controller node** (`controller-1`)
+- **3x Kafka brokers** (`kafka-1`, `kafka-2`, `kafka-3`)
+- **1x setup container** that creates 10 demo topics (`topic-0`, ..., `topic-9`), each with:
+  - **Partitions = 2**
+  - **Replication factor = 3**
   - `min.insync.replicas=2`
 
 All brokers share the same `CLUSTER_ID` (`MkU3OEVBNTcwNTJENDM2Qk`), and expose a **PLAINTEXT listener** to the host on:
@@ -47,6 +49,7 @@ All brokers share the same `CLUSTER_ID` (`MkU3OEVBNTcwNTJENDM2Qk`), and expose a
 From the directory containing the `docker-compose.yml` file:
 
 ```bash
+source .venv/bin/activate
 docker compose up -d
 ```
 
@@ -68,7 +71,9 @@ Wait until all brokers are **Healthy** before continuing.
 Once the cluster is healthy, list all topics (using one of the brokers as a bootstrap):
 
 ```bash
-kafka-topics --bootstrap-server localhost:19092 --list
+docker compose exec controller-1 kafka-topics \
+  --bootstrap-server kafka-1:19092 \
+  --list
 ```
 
 You should see something like:
@@ -97,8 +102,8 @@ If you don’t see all 10 `topic-n` topics, wait a minute and try again (the `ka
 Inspect a topic’s details:
 
 ```bash
-kafka-topics \
-  --bootstrap-server localhost:29092 \
+docker compose exec controller-1 kafka-topics \
+  --bootstrap-server kafka-2:29092 \
   --describe --topic topic-0
 ```
 
@@ -167,7 +172,11 @@ Even though the consumer **only bootstrapped to `localhost:19092`**, it now know
 - **All three brokers** (IDs 2, 3, 4)
 - The **leader** for every partition of every topic
 
-This is because the client fetched and cached the **cluster metadata** from the cluster.
+This is because the client fetched and cached the **cluster metadata** from that broker it connected to initially.
+
+### Wireshark capture
+
+![Metadata Repsonse](docs/metadata-response.png)
 
 ## Metadata Object in the Confluent Python Client
 
@@ -217,6 +226,10 @@ topics: {
   ...
 }
 ```
+
+### Python debug
+
+![Metadata Repsonse](docs/python-debug.png)
 
 This is the in-memory **metadata cache** the client uses to decide:
 
@@ -269,7 +282,11 @@ If you have [**Confluent’s Self‑Balancing Clusters (SBC)**](https://docs.con
 
 ```bash
 docker start kafka-metadata-kafka-2-1
-# wait ~15–30 minutes for SBC metrics collection and balancing
+```
+
+:warning: Wait ~15–30 minutes for SBC metrics collection and balancing
+
+```bash
 python3 get-metadata.py
 ```
 
@@ -278,8 +295,8 @@ After SBC has initialized and collected enough metrics, you should see partition
 If SBC is **not** enabled (for example, on a plain Apache Kafka or minimal CP deployment), leaders will not automatically move back to their preferred brokers after a restart. In that case, trigger a preferred leader election explicitly, for example:
 
 ```bash
-kafka-leader-election \
-  --bootstrap-server localhost:19092 \
+docker compose exec controller-1 kafka-leader-election \
+  --bootstrap-server kafka-1:19092 \
   --election-type preferred \
   --all-topic-partitions
 ```
